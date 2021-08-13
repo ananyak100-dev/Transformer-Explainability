@@ -1,0 +1,35 @@
+description: Loading the ImageNet validation set
+
+target:
+  service: amlk8s
+  name: itplabrr1cl1 #itpeusp40cl
+  vc: resrchvc
+
+environment:
+  image: pytorch/pytorch:1.9.0-cuda10.2-cudnn7-devel
+  setup:
+  - sh amlk8s_setup.sh
+
+code:
+  # local directory of the code. this will be uploaded to the server.
+  # $CONFIG_DIR is expanded to the directory of this config file
+  local_dir: $CONFIG_DIR/ViT
+
+#storage:
+#  # storage account and container where the ImageNet tar balls are contained
+#  data:
+#    storage_account_name: imagenet0storage0account
+#    container_name: imagenet0container
+
+data:
+  # location of the tar balls relative to the container
+  remote_dir: data/Ananya/imagenet_pz/2012
+#  storage_id: data
+
+# job loading the imagenet validation dataset
+jobs:
+- name: finetune_clip_test
+  # gpu job
+  sku: G1
+  command:
+  - python evaluate_clip2_GCR.py
