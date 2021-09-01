@@ -13,7 +13,6 @@ import cv2
 from torchvision.utils import save_image
 import torch.nn as nn
 from os.path import exists
-import argparse
 
 from sklearn.metrics import plot_confusion_matrix
 from sklearn.metrics import confusion_matrix
@@ -1021,322 +1020,157 @@ CLS2IDX = {0: 'tench, Tinca tinca',
  998: 'ear, spike, capitulum',
  999: 'toilet tissue, toilet paper, bathroom tissue'}
 
-# print(imagenet_val_data)
-# print(val_loader)
-
-# create heatmap from mask on image
-def show_cam_on_image(img, mask):
-    heatmap = cv2.applyColorMap(np.uint8(255 * mask), cv2.COLORMAP_JET)
-    heatmap = np.float32(heatmap) / 255
-    cam = heatmap + np.float32(img)
-    cam = cam / np.max(cam)
-    return cam
-
-
-def generate_visualization(original_image, class_index=None, method=None):
-    Res = lrp.generate_LRP(original_image.cuda(), start_layer=1, method="grad", index=class_index).reshape(original_image.shape[0], 1, 14, 14)
-    Res = torch.nn.functional.interpolate(Res, scale_factor=16, mode='bilinear').cuda()
-    Res = Res.reshape(224, 224).cuda().data.cpu().numpy()
-    Res = (Res - Res.min()) / (Res.max() - Res.min())
-    image_res = original_image[0].permute(1, 2, 0).data.cpu().numpy()
-    image_res = (image_res - image_res.min()) / (image_res.max() - image_res.min())
-    vis = show_cam_on_image(image_res, Res)
-    vis = np.uint8(255 * vis)
-    vis = cv2.cvtColor(np.array(vis), cv2.COLOR_RGB2BGR)
-    return vis
-
-
-def determine_group(output, prediction, target_int, target, group1, group2, group3, img_name, input, **kwargs):
- # predictions are based on the image, passed in as input
- # the function returns the group that the image falls into
- five_class_indices = output.data.topk(5, dim=1)[1][0].tolist()
- if prediction == target_int:
-  group1.append((img_name, target, CLS2IDX[target_int], CLS2IDX[prediction], input, output, target_int))
-  result = "group1"
- elif target_int in five_class_indices:
-  group2.append((img_name, target, CLS2IDX[target_int], CLS2IDX[prediction], input, output, target_int))
-  result = "group2"
- else:
-  sorted_preds = torch.sort(output, dim=1, descending=True)
-  #print(sorted_preds[1])
-  np_sorted_preds = sorted_preds[1].cpu().numpy()
-  target_index = np.where(np_sorted_preds == target_int)[1][0]
-  group3.append((img_name, target, CLS2IDX[target_int], CLS2IDX[prediction], target_index, input, output, target_int))
-  result = "group3"
- return result
-
-
-def visualize_all(group1, group2, group3, subdir, model_index, perturb_index, num_correct_model,
-                   dissimilarity_model, base_size, perturbation_steps, args):
- groups = [group1, group2, group3]
- for group in groups:
-  folder = subdir_save_folders[subdir] + '/group' + str(groups.index(group) + 1)
-  os.makedirs(folder, exist_ok=True)
-  for tup in group:
-   img_name = tup[0]
-   label = tup[1]
-   input = tup[-3]
-   output = tup[-2]
-   target_int = tup[-1]
-
-   save_image(input, folder + '/' + img_name[-28:-5] + '_original.png')
-
-   #print(input.shape)
-   #print(input.unsqueeze(0).shape)
-   input.requires_grad_()
-
-   target_vis = generate_visualization(input, class_index=target_int, method=method)
-   im = Image.fromarray(target_vis)
-   im.save(folder + '/' + img_name[-28:-5] + '_target.png')
-
-   # top 5 vis
-   prob = torch.softmax(output, dim=1)
-   class_indices = output.data.topk(5, dim=1)[1][0].tolist()
-   #print([(idx, CLS2IDX[idx]) for idx in class_indices])
-   top_vis = []
-   for cls_idx in class_indices:
-    top5_vis = generate_visualization(input, class_index=cls_idx, method=method)
-    top_vis.append(top5_vis)
-    top5_vis_im = Image.fromarray(top5_vis)
-    top5_vis_im.save(folder + '/' + img_name[-28:-5] + '_' + CLS2IDX[cls_idx] + '_' + str(class_indices.index(cls_idx)) + '_percent' + str(100 * prob[0, cls_idx]) + '.png')
-
-   model_index, perturb_index, num_correct_model, dissimilarity_model = \
-    perturb(img_name, label, input, output, top_vis[0], num_samples, model_index, perturb_index, num_correct_model, dissimilarity_model, base_size, perturbation_steps, args)
-
-  folder_perturb = subdir_save_folders[subdir] + '/perturbations/' + args.neg
-  os.makedirs(folder_perturb, exist_ok=True)
-
-  np.save(os.path.join(folder_perturb, 'model_hits.npy'), num_correct_model)
-  np.save(os.path.join(folder_perturb, 'model_dissimilarities.npy'), dissimilarity_model)
-  np.save(os.path.join(folder_perturb, 'perturbations_hits.npy'), num_correct_pertub[:, :perturb_index])
-  np.save(os.path.join(folder_perturb, 'perturbations_dissimilarities.npy'),
-           dissimilarity_pertub[:, :perturb_index])
-  np.save(os.path.join(folder_perturb, 'perturbations_logit_diff.npy'), logit_diff_pertub[:, :perturb_index])
-  np.save(os.path.join(folder_perturb, 'perturbations_prob_diff.npy'), prob_diff_pertub[:, :perturb_index])
-
-  print(np.mean(num_correct_model), np.std(num_correct_model))
-  print(np.mean(dissimilarity_model), np.std(dissimilarity_model))
-  print(perturbation_steps)
-  print(np.mean(num_correct_pertub, axis=1), np.std(num_correct_pertub, axis=1))
-  print(np.mean(dissimilarity_pertub, axis=1), np.std(dissimilarity_pertub, axis=1))
-
-  print(img_name, ' is good!')
-
-
-def perturb(img_name, label, input, output, vis, num_samples, model_index, perturb_index,
-            num_correct_model, dissimilarity_model, base_size, perturbation_steps, args):
- num_samples += len(input)  # added
-
- vis = torch.from_numpy(vis)
- vis = vis.to(device)
- norm_data = input
- # norm_data = normalize2(input.clone())
- print(input.shape)
- # norm_data = normalize(input.clone())
-
- # Compute model accuracy
- # with torch.no_grad():
- #  pred = full_model.forward(norm_data)
- pred = output
- pred_probabilities = torch.softmax(pred, dim=1)
- pred_org_logit = pred.data.max(1, keepdim=True)[0].squeeze(1)
- pred_org_prob = pred_probabilities.data.max(1, keepdim=True)[0].squeeze(1)
- pred_class = pred.data.max(1, keepdim=True)[1].squeeze(1)
- # print(label.type())
- # print(pred_class.type())
- tgt_pred = (label == pred_class).type(label.type()).data.cpu().numpy()
- num_correct_model[model_index:model_index + len(tgt_pred)] = tgt_pred
-
- probs = torch.softmax(pred, dim=1)
- target_probs = torch.gather(probs, 1, label[:, None])[:, 0]
- second_probs = probs.data.topk(2, dim=1)[0][:, 1]
- temp = torch.log(target_probs / second_probs).data.cpu().numpy()
- dissimilarity_model[model_index:model_index + len(temp)] = temp
-
- # Save original shape
- org_shape = input.shape
-
- if args.neg:
-  vis = -vis
-
- vis = vis.reshape(org_shape[0], -1)
-
- for i in range(len(perturbation_steps)):
-  _input = input.clone()
-
-  _, idx = torch.topk(vis, int(base_size * perturbation_steps[i]), dim=-1)
-  idx = idx.unsqueeze(1).repeat(1, org_shape[1], 1)
-  _input = _input.reshape(org_shape[0], org_shape[1], -1)
-  _input = _input.scatter_(-1, idx, 0)
-  _input = _input.reshape(*org_shape)
-
-  print(_input.shape)
-  _norm_data = _input
-  # _norm_data = normalize2(_input)
-
-  with torch.no_grad():
-   out = full_model.forward(_norm_data)
-
-  pred_probabilities = torch.softmax(out, dim=1)
-  pred_prob = pred_probabilities.data.max(1, keepdim=True)[0].squeeze(1)
-  diff = (pred_prob - pred_org_prob).data.cpu().numpy()
-  prob_diff_pertub[i, perturb_index:perturb_index + len(diff)] = diff
-
-  pred_logit = out.data.max(1, keepdim=True)[0].squeeze(1)
-  diff = (pred_logit - pred_org_logit).data.cpu().numpy()
-  logit_diff_pertub[i, perturb_index:perturb_index + len(diff)] = diff
-
-  target_class = out.data.max(1, keepdim=True)[1].squeeze(1)
-  temp = (label == target_class).type(label.type()).data.cpu().numpy()
-  num_correct_pertub[i, perturb_index:perturb_index + len(temp)] = temp
-
-  probs_pertub = torch.softmax(out, dim=1)
-  target_probs = torch.gather(probs_pertub, 1, label[:, None])[:, 0]
-  second_probs = probs_pertub.data.topk(2, dim=1)[0][:, 1]
-  temp = torch.log(target_probs / second_probs).data.cpu().numpy()
-  dissimilarity_pertub[i, perturb_index:perturb_index + len(temp)] = temp
-
- model_index += len(target)
- perturb_index += len(target)
-
- return model_index, perturb_index, num_correct_model, dissimilarity_model
-
-
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Perturbation')
-    parser.add_argument('--batch-size', type=int,
-                        default=16,
-                        help='')
-    parser.add_argument('--neg', type=bool,
-                        default=True,
-                        help='')
-    args = parser.parse_args()
-
-    #torch.multiprocessing.set_start_method('spawn')
-
-    # build the val_loader as the ImageNet validation dataset loader
-    from ViT_LRP import dino_full as vit_LRP
-    from ViT_new import dino_full
-    from ViT_explanation_generator import Baselines, LRP
-    from modules.layers_ours import *
-
-    # Model: initialize ViT pretrained with DeiT
-    model_new = dino_full(pretrained=True).cuda()
-    baselines = Baselines(model_new)
-
-    # LRP
-    full_model = vit_LRP(pretrained=True).cuda()
-    full_model.eval()
-    lrp = LRP(full_model)
-
-
-    method = 'transformer_attribution'
-
-    # evaluate
-
-    # load data
-    normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        normalize,
-    ])
-
-    cuda = torch.cuda.is_available()
-    device = torch.device("cuda" if cuda else "cpu")
-
-
-    # def normalize2(tensor,
-    #               mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]):
-    #  dtype = tensor.dtype
-    #  mean = torch.as_tensor(mean, dtype=dtype, device=tensor.device)
-    #  std = torch.as_tensor(std, dtype=dtype, device=tensor.device)
-    #  tensor.sub_(mean[None, :, None, None]).div_(std[None, :, None, None])
-    #  return tensor
-
-    num_correct = 0
-    num_total = 0
-
-    imagenet_val_data = torchvision.datasets.ImageNet('/home/t-akarthik/PycharmProjects2/ImageNet_Data/', split='val',
-                                                  transform = transform)
-    val_loader = torch.utils.data.DataLoader(imagenet_val_data,
-                                              batch_size=args.batch_size,
-                                              shuffle=True)
-
-    #selected = [728, 837, 366, 344, 309]
-    selected = [728] #start w one class
-    groups_dict = {}
-    subdir_save_folders = {}
-    for subdir in selected:
-     subdir_save_folder = '/home/t-akarthik/Desktop/DINO/myFinetune/epoch99_Perturb/' + method + '/' + CLS2IDX[subdir]
-     os.makedirs(subdir_save_folder, exist_ok=True)
-     subdir_save_folders[subdir] = subdir_save_folder
-     groups_dict[CLS2IDX[subdir]] = ([], [], [])
-
-    count = 0
-
-
-
-    for i, (input, target) in enumerate(val_loader, 0):
-       if target in selected:
-
-          # input = input.cuda(non_blocking=True)
-          # target = target.cuda(non_blocking=True)
-          input = input.to(device)
-          target = target.to(device)
-
-          with torch.no_grad():
-           output = full_model.forward(input)
-
-          # output = model.forward_return_n_last_blocks(input, n=4, return_patch_avgpool=False, depths=[])
-          # output = linear_classifier(output.view(output.size(0), -1))
-
-          prediction = int(np.argmax(output.cpu().detach(), axis=1)[0])
-          target_int = int(target[0])
-          # _, pred = output.topk(1, 1, True, True)
-          # pred = pred.t()
-          print(prediction)
-          print(target_int)
-          # correct = pred.eq(target.reshape(1, -1).expand_as(pred))
-
-          print(CLS2IDX[target_int])  # just to check progress
-
-          img_name, _ = val_loader.dataset.samples[i]
-          # print(img_name)
-          result = determine_group(output, prediction, target_int, target, groups_dict[CLS2IDX[target_int]][0], groups_dict[CLS2IDX[target_int]][1], groups_dict[CLS2IDX[target_int]][2], img_name, input)  # make sure group1, group2, group3 are being updated
-          count += 1
-          if count == 5: break
-          # break
-
-    for subdir in selected:
-     print('Vis: ', CLS2IDX[subdir])
-     group1 = groups_dict[CLS2IDX[subdir]][0]
-     group2 = groups_dict[CLS2IDX[subdir]][1]
-     group3 = groups_dict[CLS2IDX[subdir]][2]
-     print(len(group1))
-     print(len(group2))
-     print(len(group3))
-
-     num_samples = 0
-     num_correct_model = np.zeros((len(group1) + len(group2) + len(group3)))
-     dissimilarity_model = np.zeros((len(group1) + len(group2) + len(group3)))
-     model_index = 0
-
-     base_size = 224 * 224
-     perturbation_steps = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-
-     num_correct_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     dissimilarity_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     logit_diff_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     prob_diff_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     perturb_index = 0
-
-     visualize_all(group1, group2, group3, subdir, model_index, perturb_index, num_correct_model,
-                   dissimilarity_model, base_size, perturbation_steps, args)
-     #print('Class accuracy: ', len(group1) / (len(group1) + len(group2) + len(group3)))
-
-    print('Done!')
-
+# # build the val_loader as the ImageNet validation dataset loader
+# from ViT_LRP_Dino import dino_patch16 as vit_LRP
+# from ViT_explanation_generator import Baselines, LRP
+#
+# class DinoFull(nn.Module):
+#  def __init__(self):
+#   super(DinoFull, self).__init__()
+#   self.model = vit_LRP(pretrained=True).cuda()
+#   self.model.eval()
+#
+#   self.linear_classifier = nn.Linear(3072, 1000).cuda()
+#   state_dict_head = torch.load(
+#    '/home/t-akarthik/PycharmProjects2/Transformer-Explainability/baselines/ViT/dino_base16.pth.tar', map_location="cpu")
+#   state_dict_head = state_dict_head['state_dict']
+#   # remove `linear.` and 'module.' prefix
+#   state_dict_head = {k.replace("module.linear.", ""): v for k, v in state_dict_head.items()}
+#   self.linear_classifier.load_state_dict(state_dict_head, strict=True)
+#
+#  def forward(self, input):
+#   output = self.model.forward_return_n_last_blocks(input, n=4, return_patch_avgpool=False, depths=[])
+#   output = self.linear_classifier(output.view(output.size(0), -1))
+#   return output
+#
+#
+# full_model = DinoFull()
+# full_model.eval()
+
+ROOT_DIR = os.environ['AMLT_DATA_DIR']
+OUTPUT_DIR = ROOT_DIR + "/output/DeiT/DeiT_Small Predictions"
+
+# DEIT
+from ViT_LRP import deit_small_patch16_224 as vit_LRP
+
+# DINO
+#from ViT_LRP import dino_full as vit_LRP
+
+# from ViT_new import dino_full
+# from ViT_explanation_generator import Baselines, LRP
+from modules.layers_ours import *
+
+# Model: initialize ViT pretrained with DeiT
+# model_new = dino_full(pretrained=True).cuda()
+# baselines = Baselines(model_new)
+
+# LRP
+full_model = vit_LRP(pretrained=True).cuda()
+full_model.eval()
+# lrp = LRP(full_model)
+
+# evaluate
+
+normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    normalize,
+])
+
+from ZipData import ZipData
+
+datapath_val = os.path.join(ROOT_DIR, 'val.zip')
+data_map_val = os.path.join(ROOT_DIR, 'val_map.txt')
+
+dataset_val = ZipData(datapath_val, data_map_val, transform)
+
+val_loader = torch.utils.data.DataLoader(
+ dataset_val,
+ batch_size=1,
+ num_workers=10,
+ pin_memory=True,
+ shuffle=False
+)
+
+num_correct = 0
+num_total = 0
+num_correct_by_class = {}
+predictions = {}
+
+for i, (input, target) in enumerate(val_loader, 0):
+
+    input = input.cuda(non_blocking=True)
+    target = target.cuda(non_blocking=True)
+    print(input)
+    print(int(target[0]))
+
+    with torch.no_grad():
+     output = full_model(input)
+    #print(output.size())
+
+    prediction = np.argmax(output.cpu().detach(), axis=1)[0]
+    print(int(prediction))
+
+    img_name, _ = val_loader.dataset.samples[i]
+    predictions[img_name] = int(prediction)
+
+    if str(int(target[0])) not in num_correct_by_class:
+     num_correct_by_class[str(int(target[0]))] = 0
+
+    if int(prediction) == int(target[0]):
+     num_correct += 1
+
+     num_correct_by_class[str(int(target[0]))] += 1
+    #num_correct += np.sum(prediction == target)
+
+print('num correct model: ', num_correct)
+accuracy = num_correct / 50000
+print('Total accuracy: ', accuracy)
+
+print('num correct by class', num_correct_by_class)
+
+sorted_dict = sorted(num_correct_by_class.items(), key=lambda x: x[1], reverse=True)
+
+print('====================')
+print('Top 5 classes:')
+print(sorted_dict[:5])
+print('Bottom 5 classes:')
+print(sorted_dict[-5:])
+
+np.save(OUTPUT_DIR + 'predictions_deitSmall.npy', predictions)
+
+np.save(OUTPUT_DIR + 'predictions_deitSmall_csv.csv', predictions)
+
+# def get_dataset(self):
+#  """
+#  Uses torchvision.datasets.ImageNet to load dataset.
+#  Downloads dataset if doesn't exist already.
+#  Returns:
+#       torch.utils.data.TensorDataset: trainset, valset
+#  """
+#
+#  trainset = datasets.ImageNet('datasets/ImageNet/train/', split='train', transform=self.train_transforms,
+#                               target_transform=None, download=True)
+#  valset = datasets.ImageNet('datasets/ImageNet/val/', split='val', transform=self.val_transforms,
+#                             target_transform=None, download=True)
+#
+#  return trainset, valset
+#
+#
+# def get_loaders(dataroot, val_batch_size, train_batch_size, input_size, workers, num_nodes, local_rank):
+#  # TODO: pin-memory currently broken for distributed
+#  pin_memory = False
+#  # TODO: datasets.ImageNet
+#  val_data = datasets.ImageFolder(root=os.path.join(dataroot, 'val'), transform=get_transform(False, input_size))
+#  val_sampler = DistributedSampler(val_data, num_nodes, local_rank)
+#  val_loader = torch.utils.data.DataLoader(val_data, batch_size=val_batch_size, sampler=val_sampler,
+#                                           num_workers=workers, pin_memory=pin_memory)
+#
+#  train_data = datasets.ImageFolder(root=os.path.join(dataroot, 'train'),
+#                                    transform=get_transform(input_size=input_size))
+#  train_sampler = DistributedSampler(train_data, num_nodes, local_rank)
+#  train_loader = torch.utils.data.DataLoader(train_data, batch_size=train_batch_size, sampler=train_sampler,
+#                                             num_workers=workers, pin_memory=pin_memory)
+#  return train_loader, val_loader
 

@@ -1,24 +1,36 @@
-import os
-# os.chdir(f'./Transformer-Explainability')
-#
-# !pip install -r requirements.txt
-
-from PIL import Image
-import torchvision
-import torchvision.transforms as transforms
-import matplotlib.pyplot as plt
 import torch
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
 import numpy as np
-import cv2
-from torchvision.utils import save_image
-import torch.nn as nn
-from os.path import exists
+from numpy import *
 import argparse
+from PIL import Image
+import imageio
+import os
+from tqdm import tqdm
+from utils.metrices import *
 
-from sklearn.metrics import plot_confusion_matrix
-from sklearn.metrics import confusion_matrix
+from utils import render
+from utils.saver import Saver
+from utils.iou import IoU
 
-torch.cuda.empty_cache()
+from data.imagenet import Imagenet_Segmentation
+
+from ViT_explanation_generator import Baselines, LRP
+from ViT_new import dino_full
+from ViT_LRP import dino_full as vit_LRP
+
+from sklearn.metrics import precision_recall_curve
+import matplotlib.pyplot as plt
+
+import torch.nn.functional as F
+
+plt.switch_backend('agg')
+
+
+# hyperparameters
+num_workers = 0
+batch_size = 1
 
 CLS2IDX = {0: 'tench, Tinca tinca',
  1: 'goldfish, Carassius auratus',
@@ -1021,322 +1033,285 @@ CLS2IDX = {0: 'tench, Tinca tinca',
  998: 'ear, spike, capitulum',
  999: 'toilet tissue, toilet paper, bathroom tissue'}
 
-# print(imagenet_val_data)
-# print(val_loader)
+# idx_list = [565, 275, 645, 376, 13] # 5 top classes for DINO Small
+idx_list = [620, 899, 657, 638, 782] # 5 bottom classes for DINO small
+cls = [CLS2IDX[idx] for idx in idx_list]
 
-# create heatmap from mask on image
-def show_cam_on_image(img, mask):
-    heatmap = cv2.applyColorMap(np.uint8(255 * mask), cv2.COLORMAP_JET)
-    heatmap = np.float32(heatmap) / 255
-    cam = heatmap + np.float32(img)
-    cam = cam / np.max(cam)
-    return cam
+# cls = ['airplane',
+#        'bicycle',
+#        'bird',
+#        'boat',
+#        'bottle',
+#        'bus',
+#        'car',
+#        'cat',
+#        'chair',
+#        'cow',
+#        'dining table',
+#        'dog',
+#        'horse',
+#        'motobike',
+#        'person',
+#        'potted plant',
+#        'sheep',
+#        'sofa',
+#        'train',
+#        'tv'
+#        ]
+
+# Args
+parser = argparse.ArgumentParser(description='Training multi-class classifier')
+parser.add_argument('--arc', type=str, default='vgg', metavar='N',
+                    help='Model architecture')
+parser.add_argument('--train_dataset', type=str, default='imagenet', metavar='N',
+                    help='Testing Dataset')
+parser.add_argument('--method', type=str,
+                    default='transformer_attribution',
+                    choices=[ 'rollout', 'lrp','transformer_attribution', 'full_lrp', 'lrp_last_layer',
+                              'attn_last_layer', 'attn_gradcam'],
+                    help='')
+parser.add_argument('--thr', type=float, default=0.,
+                    help='threshold')
+parser.add_argument('--K', type=int, default=1,
+                    help='new - top K results')
+parser.add_argument('--save-img', action='store_true',
+                    default=True,
+                    help='')
+parser.add_argument('--no-ia', action='store_true',
+                    default=False,
+                    help='')
+parser.add_argument('--no-fx', action='store_true',
+                    default=False,
+                    help='')
+parser.add_argument('--no-fgx', action='store_true',
+                    default=False,
+                    help='')
+parser.add_argument('--no-m', action='store_true',
+                    default=False,
+                    help='')
+parser.add_argument('--no-reg', action='store_true',
+                    default=False,
+                    help='')
+parser.add_argument('--is-ablation', type=bool,
+                    default=False,
+                    help='')
+args = parser.parse_args()
+
+args.checkname = args.method + '_' + args.arc
+
+alpha = 2
+
+cuda = torch.cuda.is_available()
+device = torch.device("cuda" if cuda else "cpu")
+
+# Define Saver
+saver = Saver(args) # I edited Saver by adding Desktop to the path
+saver.results_dir = os.path.join(saver.experiment_dir, 'results')
+if not os.path.exists(saver.results_dir):
+    os.makedirs(saver.results_dir)
+if not os.path.exists(os.path.join(saver.results_dir, 'input')):
+    os.makedirs(os.path.join(saver.results_dir, 'input'))
+if not os.path.exists(os.path.join(saver.results_dir, 'explain')):
+    os.makedirs(os.path.join(saver.results_dir, 'explain'))
+
+args.exp_img_path = os.path.join(saver.results_dir, 'explain/img')
+if not os.path.exists(args.exp_img_path):
+    os.makedirs(args.exp_img_path)
+args.exp_np_path = os.path.join(saver.results_dir, 'explain/np')
+if not os.path.exists(args.exp_np_path):
+    os.makedirs(args.exp_np_path)
+
+# Data
+normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+test_img_trans = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    normalize,
+])
+test_lbl_trans = transforms.Compose([
+    transforms.Resize((224, 224), Image.NEAREST), # what does NEAREST mean?
+])
+
+ROOT_DIR = "/home/t-akarthik/PycharmProjects2/ImageNet_Data/"
+OUTPUT_DIR = ROOT_DIR + "/output/Segmentation/DINO_Small/myClasses/Top"
+
+imagenet_seg_path = ROOT_DIR + '/gtsegs_ijcv (1).mat'
+
+ds = Imagenet_Segmentation(imagenet_seg_path,
+                           transform=test_img_trans, target_transform=test_lbl_trans)
+dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=1, drop_last=False)
+
+# Model
+model = dino_full(pretrained=True).cuda()
+baselines = Baselines(model)
+
+# LRP
+model_LRP = vit_LRP(pretrained=True).cuda()
+model_LRP.eval()
+lrp = LRP(model_LRP)
+
+metric = IoU(2, ignore_index=-1)
+
+iterator = tqdm(dl)
+
+model.eval()
 
 
-def generate_visualization(original_image, class_index=None, method=None):
-    Res = lrp.generate_LRP(original_image.cuda(), start_layer=1, method="grad", index=class_index).reshape(original_image.shape[0], 1, 14, 14)
-    Res = torch.nn.functional.interpolate(Res, scale_factor=16, mode='bilinear').cuda()
-    Res = Res.reshape(224, 224).cuda().data.cpu().numpy()
+def compute_pred(output):
+    pred = output.data.max(1, keepdim=True)[1]  # get the index of the max log-probability
+    # pred[0, 0] = 282
+    # print('Pred cls : ' + str(pred))
+    T = pred.squeeze().cpu().numpy()
+    T = np.expand_dims(T, 0)
+    T = (T[:, np.newaxis] == np.arange(1000)) * 1.0
+    T = torch.from_numpy(T).type(torch.FloatTensor)
+    Tt = T.cuda()
+
+    return Tt
+
+
+def eval_batch(image, labels, evaluator, index):
+    evaluator.zero_grad()
+    # Save input image
+    if args.save_img:
+        img = image[0].permute(1, 2, 0).data.cpu().numpy()
+        img = 255 * (img - img.min()) / (img.max() - img.min())
+        img = img.astype('uint8')
+        Image.fromarray(img, 'RGB').save(os.path.join(saver.results_dir, 'input/{}_input.png'.format(index)))
+        Image.fromarray((labels.repeat(3, 1, 1).permute(1, 2, 0).data.cpu().numpy() * 255).astype('uint8'), 'RGB').save(
+            os.path.join(saver.results_dir, 'input/{}_mask.png'.format(index)))
+
+    image.requires_grad = True
+
+    image = image.requires_grad_()
+    predictions = evaluator(image)
+    
+    # segmentation test for our method
+    if args.method == 'transformer_attribution':
+        Res = lrp.generate_LRP(image.cuda(), start_layer=1, method="transformer_attribution").reshape(batch_size, 1, 14, 14)
+
+    if args.method != 'full_lrp':
+        # interpolate to full image size (224,224)
+        Res = torch.nn.functional.interpolate(Res, scale_factor=16, mode='bilinear').cuda()
+
+    # threshold between FG and BG is the mean    
     Res = (Res - Res.min()) / (Res.max() - Res.min())
-    image_res = original_image[0].permute(1, 2, 0).data.cpu().numpy()
-    image_res = (image_res - image_res.min()) / (image_res.max() - image_res.min())
-    vis = show_cam_on_image(image_res, Res)
-    vis = np.uint8(255 * vis)
-    vis = cv2.cvtColor(np.array(vis), cv2.COLOR_RGB2BGR)
-    return vis
-
-
-def determine_group(output, prediction, target_int, target, group1, group2, group3, img_name, input, **kwargs):
- # predictions are based on the image, passed in as input
- # the function returns the group that the image falls into
- five_class_indices = output.data.topk(5, dim=1)[1][0].tolist()
- if prediction == target_int:
-  group1.append((img_name, target, CLS2IDX[target_int], CLS2IDX[prediction], input, output, target_int))
-  result = "group1"
- elif target_int in five_class_indices:
-  group2.append((img_name, target, CLS2IDX[target_int], CLS2IDX[prediction], input, output, target_int))
-  result = "group2"
- else:
-  sorted_preds = torch.sort(output, dim=1, descending=True)
-  #print(sorted_preds[1])
-  np_sorted_preds = sorted_preds[1].cpu().numpy()
-  target_index = np.where(np_sorted_preds == target_int)[1][0]
-  group3.append((img_name, target, CLS2IDX[target_int], CLS2IDX[prediction], target_index, input, output, target_int))
-  result = "group3"
- return result
-
-
-def visualize_all(group1, group2, group3, subdir, model_index, perturb_index, num_correct_model,
-                   dissimilarity_model, base_size, perturbation_steps, args):
- groups = [group1, group2, group3]
- for group in groups:
-  folder = subdir_save_folders[subdir] + '/group' + str(groups.index(group) + 1)
-  os.makedirs(folder, exist_ok=True)
-  for tup in group:
-   img_name = tup[0]
-   label = tup[1]
-   input = tup[-3]
-   output = tup[-2]
-   target_int = tup[-1]
-
-   save_image(input, folder + '/' + img_name[-28:-5] + '_original.png')
-
-   #print(input.shape)
-   #print(input.unsqueeze(0).shape)
-   input.requires_grad_()
-
-   target_vis = generate_visualization(input, class_index=target_int, method=method)
-   im = Image.fromarray(target_vis)
-   im.save(folder + '/' + img_name[-28:-5] + '_target.png')
-
-   # top 5 vis
-   prob = torch.softmax(output, dim=1)
-   class_indices = output.data.topk(5, dim=1)[1][0].tolist()
-   #print([(idx, CLS2IDX[idx]) for idx in class_indices])
-   top_vis = []
-   for cls_idx in class_indices:
-    top5_vis = generate_visualization(input, class_index=cls_idx, method=method)
-    top_vis.append(top5_vis)
-    top5_vis_im = Image.fromarray(top5_vis)
-    top5_vis_im.save(folder + '/' + img_name[-28:-5] + '_' + CLS2IDX[cls_idx] + '_' + str(class_indices.index(cls_idx)) + '_percent' + str(100 * prob[0, cls_idx]) + '.png')
-
-   model_index, perturb_index, num_correct_model, dissimilarity_model = \
-    perturb(img_name, label, input, output, top_vis[0], num_samples, model_index, perturb_index, num_correct_model, dissimilarity_model, base_size, perturbation_steps, args)
-
-  folder_perturb = subdir_save_folders[subdir] + '/perturbations/' + args.neg
-  os.makedirs(folder_perturb, exist_ok=True)
-
-  np.save(os.path.join(folder_perturb, 'model_hits.npy'), num_correct_model)
-  np.save(os.path.join(folder_perturb, 'model_dissimilarities.npy'), dissimilarity_model)
-  np.save(os.path.join(folder_perturb, 'perturbations_hits.npy'), num_correct_pertub[:, :perturb_index])
-  np.save(os.path.join(folder_perturb, 'perturbations_dissimilarities.npy'),
-           dissimilarity_pertub[:, :perturb_index])
-  np.save(os.path.join(folder_perturb, 'perturbations_logit_diff.npy'), logit_diff_pertub[:, :perturb_index])
-  np.save(os.path.join(folder_perturb, 'perturbations_prob_diff.npy'), prob_diff_pertub[:, :perturb_index])
-
-  print(np.mean(num_correct_model), np.std(num_correct_model))
-  print(np.mean(dissimilarity_model), np.std(dissimilarity_model))
-  print(perturbation_steps)
-  print(np.mean(num_correct_pertub, axis=1), np.std(num_correct_pertub, axis=1))
-  print(np.mean(dissimilarity_pertub, axis=1), np.std(dissimilarity_pertub, axis=1))
-
-  print(img_name, ' is good!')
-
-
-def perturb(img_name, label, input, output, vis, num_samples, model_index, perturb_index,
-            num_correct_model, dissimilarity_model, base_size, perturbation_steps, args):
- num_samples += len(input)  # added
-
- vis = torch.from_numpy(vis)
- vis = vis.to(device)
- norm_data = input
- # norm_data = normalize2(input.clone())
- print(input.shape)
- # norm_data = normalize(input.clone())
-
- # Compute model accuracy
- # with torch.no_grad():
- #  pred = full_model.forward(norm_data)
- pred = output
- pred_probabilities = torch.softmax(pred, dim=1)
- pred_org_logit = pred.data.max(1, keepdim=True)[0].squeeze(1)
- pred_org_prob = pred_probabilities.data.max(1, keepdim=True)[0].squeeze(1)
- pred_class = pred.data.max(1, keepdim=True)[1].squeeze(1)
- # print(label.type())
- # print(pred_class.type())
- tgt_pred = (label == pred_class).type(label.type()).data.cpu().numpy()
- num_correct_model[model_index:model_index + len(tgt_pred)] = tgt_pred
 
- probs = torch.softmax(pred, dim=1)
- target_probs = torch.gather(probs, 1, label[:, None])[:, 0]
- second_probs = probs.data.topk(2, dim=1)[0][:, 1]
- temp = torch.log(target_probs / second_probs).data.cpu().numpy()
- dissimilarity_model[model_index:model_index + len(temp)] = temp
-
- # Save original shape
- org_shape = input.shape
-
- if args.neg:
-  vis = -vis
-
- vis = vis.reshape(org_shape[0], -1)
-
- for i in range(len(perturbation_steps)):
-  _input = input.clone()
-
-  _, idx = torch.topk(vis, int(base_size * perturbation_steps[i]), dim=-1)
-  idx = idx.unsqueeze(1).repeat(1, org_shape[1], 1)
-  _input = _input.reshape(org_shape[0], org_shape[1], -1)
-  _input = _input.scatter_(-1, idx, 0)
-  _input = _input.reshape(*org_shape)
-
-  print(_input.shape)
-  _norm_data = _input
-  # _norm_data = normalize2(_input)
-
-  with torch.no_grad():
-   out = full_model.forward(_norm_data)
-
-  pred_probabilities = torch.softmax(out, dim=1)
-  pred_prob = pred_probabilities.data.max(1, keepdim=True)[0].squeeze(1)
-  diff = (pred_prob - pred_org_prob).data.cpu().numpy()
-  prob_diff_pertub[i, perturb_index:perturb_index + len(diff)] = diff
-
-  pred_logit = out.data.max(1, keepdim=True)[0].squeeze(1)
-  diff = (pred_logit - pred_org_logit).data.cpu().numpy()
-  logit_diff_pertub[i, perturb_index:perturb_index + len(diff)] = diff
-
-  target_class = out.data.max(1, keepdim=True)[1].squeeze(1)
-  temp = (label == target_class).type(label.type()).data.cpu().numpy()
-  num_correct_pertub[i, perturb_index:perturb_index + len(temp)] = temp
-
-  probs_pertub = torch.softmax(out, dim=1)
-  target_probs = torch.gather(probs_pertub, 1, label[:, None])[:, 0]
-  second_probs = probs_pertub.data.topk(2, dim=1)[0][:, 1]
-  temp = torch.log(target_probs / second_probs).data.cpu().numpy()
-  dissimilarity_pertub[i, perturb_index:perturb_index + len(temp)] = temp
-
- model_index += len(target)
- perturb_index += len(target)
-
- return model_index, perturb_index, num_correct_model, dissimilarity_model
-
-
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Perturbation')
-    parser.add_argument('--batch-size', type=int,
-                        default=16,
-                        help='')
-    parser.add_argument('--neg', type=bool,
-                        default=True,
-                        help='')
-    args = parser.parse_args()
-
-    #torch.multiprocessing.set_start_method('spawn')
-
-    # build the val_loader as the ImageNet validation dataset loader
-    from ViT_LRP import dino_full as vit_LRP
-    from ViT_new import dino_full
-    from ViT_explanation_generator import Baselines, LRP
-    from modules.layers_ours import *
-
-    # Model: initialize ViT pretrained with DeiT
-    model_new = dino_full(pretrained=True).cuda()
-    baselines = Baselines(model_new)
-
-    # LRP
-    full_model = vit_LRP(pretrained=True).cuda()
-    full_model.eval()
-    lrp = LRP(full_model)
-
-
-    method = 'transformer_attribution'
-
-    # evaluate
-
-    # load data
-    normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        normalize,
-    ])
-
-    cuda = torch.cuda.is_available()
-    device = torch.device("cuda" if cuda else "cpu")
-
-
-    # def normalize2(tensor,
-    #               mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]):
-    #  dtype = tensor.dtype
-    #  mean = torch.as_tensor(mean, dtype=dtype, device=tensor.device)
-    #  std = torch.as_tensor(std, dtype=dtype, device=tensor.device)
-    #  tensor.sub_(mean[None, :, None, None]).div_(std[None, :, None, None])
-    #  return tensor
-
-    num_correct = 0
-    num_total = 0
-
-    imagenet_val_data = torchvision.datasets.ImageNet('/home/t-akarthik/PycharmProjects2/ImageNet_Data/', split='val',
-                                                  transform = transform)
-    val_loader = torch.utils.data.DataLoader(imagenet_val_data,
-                                              batch_size=args.batch_size,
-                                              shuffle=True)
-
-    #selected = [728, 837, 366, 344, 309]
-    selected = [728] #start w one class
-    groups_dict = {}
-    subdir_save_folders = {}
-    for subdir in selected:
-     subdir_save_folder = '/home/t-akarthik/Desktop/DINO/myFinetune/epoch99_Perturb/' + method + '/' + CLS2IDX[subdir]
-     os.makedirs(subdir_save_folder, exist_ok=True)
-     subdir_save_folders[subdir] = subdir_save_folder
-     groups_dict[CLS2IDX[subdir]] = ([], [], [])
-
-    count = 0
-
-
-
-    for i, (input, target) in enumerate(val_loader, 0):
-       if target in selected:
-
-          # input = input.cuda(non_blocking=True)
-          # target = target.cuda(non_blocking=True)
-          input = input.to(device)
-          target = target.to(device)
-
-          with torch.no_grad():
-           output = full_model.forward(input)
-
-          # output = model.forward_return_n_last_blocks(input, n=4, return_patch_avgpool=False, depths=[])
-          # output = linear_classifier(output.view(output.size(0), -1))
-
-          prediction = int(np.argmax(output.cpu().detach(), axis=1)[0])
-          target_int = int(target[0])
-          # _, pred = output.topk(1, 1, True, True)
-          # pred = pred.t()
-          print(prediction)
-          print(target_int)
-          # correct = pred.eq(target.reshape(1, -1).expand_as(pred))
-
-          print(CLS2IDX[target_int])  # just to check progress
-
-          img_name, _ = val_loader.dataset.samples[i]
-          # print(img_name)
-          result = determine_group(output, prediction, target_int, target, groups_dict[CLS2IDX[target_int]][0], groups_dict[CLS2IDX[target_int]][1], groups_dict[CLS2IDX[target_int]][2], img_name, input)  # make sure group1, group2, group3 are being updated
-          count += 1
-          if count == 5: break
-          # break
-
-    for subdir in selected:
-     print('Vis: ', CLS2IDX[subdir])
-     group1 = groups_dict[CLS2IDX[subdir]][0]
-     group2 = groups_dict[CLS2IDX[subdir]][1]
-     group3 = groups_dict[CLS2IDX[subdir]][2]
-     print(len(group1))
-     print(len(group2))
-     print(len(group3))
-
-     num_samples = 0
-     num_correct_model = np.zeros((len(group1) + len(group2) + len(group3)))
-     dissimilarity_model = np.zeros((len(group1) + len(group2) + len(group3)))
-     model_index = 0
-
-     base_size = 224 * 224
-     perturbation_steps = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-
-     num_correct_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     dissimilarity_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     logit_diff_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     prob_diff_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     perturb_index = 0
-
-     visualize_all(group1, group2, group3, subdir, model_index, perturb_index, num_correct_model,
-                   dissimilarity_model, base_size, perturbation_steps, args)
-     #print('Class accuracy: ', len(group1) / (len(group1) + len(group2) + len(group3)))
-
-    print('Done!')
-
-
+    ret = Res.mean()
+
+    Res_1 = Res.gt(ret).type(Res.type())
+    Res_0 = Res.le(ret).type(Res.type())
+
+    Res_1_AP = Res
+    Res_0_AP = 1-Res
+
+    Res_1[Res_1 != Res_1] = 0
+    Res_0[Res_0 != Res_0] = 0
+    Res_1_AP[Res_1_AP != Res_1_AP] = 0
+    Res_0_AP[Res_0_AP != Res_0_AP] = 0
+
+
+    # TEST
+    pred = Res.clamp(min=args.thr) / Res.max()
+    pred = pred.view(-1).data.cpu().numpy()
+    target = labels.view(-1).data.cpu().numpy()
+    # print("target", target.shape)
+
+    output = torch.cat((Res_0, Res_1), 1)
+    output_AP = torch.cat((Res_0_AP, Res_1_AP), 1)
+
+    if args.save_img:
+        # Save predicted mask
+        mask = F.interpolate(Res_1, [64, 64], mode='bilinear')
+        mask = mask[0].squeeze().data.cpu().numpy()
+        # mask = Res_1[0].squeeze().data.cpu().numpy()
+        mask = 255 * mask
+        mask = mask.astype('uint8')
+        imageio.imsave(os.path.join(args.exp_img_path, 'mask_' + str(index) + '.jpg'), mask)
+
+        relevance = F.interpolate(Res, [64, 64], mode='bilinear')
+        relevance = relevance[0].permute(1, 2, 0).data.cpu().numpy()
+        # relevance = Res[0].permute(1, 2, 0).data.cpu().numpy()
+        hm = np.sum(relevance, axis=-1)
+        maps = (render.hm_to_rgb(hm, scaling=3, sigma=1, cmap='seismic') * 255).astype(np.uint8)
+        imageio.imsave(os.path.join(args.exp_img_path, 'heatmap_' + str(index) + '.jpg'), maps)
+
+    # Evaluate Segmentation
+    batch_inter, batch_union, batch_correct, batch_label = 0, 0, 0, 0
+    batch_ap, batch_f1 = 0, 0
+
+    # Segmentation resutls
+    print('Calculating...')
+    correct, labeled = batch_pix_accuracy(output[0].data.cpu(), labels[0])
+    inter, union = batch_intersection_union(output[0].data.cpu(), labels[0], 2)
+    batch_correct += correct
+    batch_label += labeled
+    batch_inter += inter
+    batch_union += union
+    # print("output", output.shape)
+    # print("ap labels", labels.shape)
+    # ap = np.nan_to_num(get_ap_scores(output, labels))
+    ap = np.nan_to_num(get_ap_scores(output_AP, labels))
+    f1 = np.nan_to_num(get_f1_scores(output[0, 1].data.cpu(), labels[0]))
+    batch_ap += ap
+    batch_f1 += f1
+
+    return batch_correct, batch_label, batch_inter, batch_union, batch_ap, batch_f1, pred, target
+
+
+total_inter, total_union, total_correct, total_label = np.int64(0), np.int64(0), np.int64(0), np.int64(0)
+total_ap, total_f1 = [], []
+
+predictions, targets = [], []
+print('Evaluating...')
+for batch_idx, (image, labels) in enumerate(iterator):
+
+    if args.method == "blur":
+        images = (image[0].cuda(), image[1].cuda())
+    else:
+        images = image.cuda()
+    labels = labels.cuda()
+    # print("image", image.shape)
+    # print("lables", labels.shape)
+
+    correct, labeled, inter, union, ap, f1, pred, target = eval_batch(images, labels, model, batch_idx)
+
+    predictions.append(pred)
+    targets.append(target)
+
+    total_correct += correct.astype('int64')
+    total_label += labeled.astype('int64')
+    total_inter += inter.astype('int64')
+    total_union += union.astype('int64')
+    total_ap += [ap]
+    total_f1 += [f1]
+    pixAcc = np.float64(1.0) * total_correct / (np.spacing(1, dtype=np.float64) + total_label)
+    IoU = np.float64(1.0) * total_inter / (np.spacing(1, dtype=np.float64) + total_union)
+    mIoU = IoU.mean()
+    mAp = np.mean(total_ap)
+    mF1 = np.mean(total_f1)
+    iterator.set_description('pixAcc: %.4f, mIoU: %.4f, mAP: %.4f, mF1: %.4f' % (pixAcc, mIoU, mAp, mF1))
+
+predictions = np.concatenate(predictions)
+targets = np.concatenate(targets)
+pr, rc, thr = precision_recall_curve(targets, predictions)
+np.save(os.path.join(saver.experiment_dir, 'precision.npy'), pr)
+np.save(os.path.join(saver.experiment_dir, 'recall.npy'), rc)
+
+plt.figure()
+plt.plot(rc, pr)
+plt.savefig(os.path.join(saver.experiment_dir, 'PR_curve_{}.png'.format(args.method)))
+
+txtfile = os.path.join(saver.experiment_dir, 'result_mIoU_%.4f.txt' % mIoU)
+# txtfile = 'result_mIoU_%.4f.txt' % mIoU
+fh = open(txtfile, 'w')
+print("Mean IoU over %d classes: %.4f\n" % (2, mIoU))
+print("Pixel-wise Accuracy: %2.2f%%\n" % (pixAcc * 100))
+print("Mean AP over %d classes: %.4f\n" % (2, mAp))
+print("Mean F1 over %d classes: %.4f\n" % (2, mF1))
+
+fh.write("Mean IoU over %d classes: %.4f\n" % (2, mIoU))
+fh.write("Pixel-wise Accuracy: %2.2f%%\n" % (pixAcc * 100))
+fh.write("Mean AP over %d classes: %.4f\n" % (2, mAp))
+fh.write("Mean F1 over %d classes: %.4f\n" % (2, mF1))
+fh.close()

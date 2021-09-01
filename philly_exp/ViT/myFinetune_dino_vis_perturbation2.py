@@ -1033,6 +1033,23 @@ def show_cam_on_image(img, mask):
     return cam
 
 
+def generate_visualization2(original_image, class_index=None, method=None):
+ Res = lrp.generate_LRP(original_image.cuda(), start_layer=1, method="grad", index=class_index).reshape(
+  original_image.shape[0], 1, 14, 14)
+ Res = torch.nn.functional.interpolate(Res, scale_factor=16, mode='bilinear').cuda()
+ Res = Res.reshape(224, 224).cuda().data.cpu().numpy()
+ Res = (Res - Res.min()) / (Res.max() - Res.min())
+ # image_res = original_image[0].permute(1, 2, 0).data.cpu().numpy()
+ # image_res = (image_res - image_res.min()) / (image_res.max() - image_res.min())
+ # vis = show_cam_on_image(image_res, Res)
+ # vis = np.uint8(255 * vis)
+ # vis = cv2.cvtColor(np.array(vis), cv2.COLOR_RGB2BGR)
+ vis = Res
+ #print(vis.shape)
+ #print(vis)
+ return vis
+
+
 def generate_visualization(original_image, class_index=None, method=None):
     Res = lrp.generate_LRP(original_image.cuda(), start_layer=1, method="grad", index=class_index).reshape(original_image.shape[0], 1, 14, 14)
     Res = torch.nn.functional.interpolate(Res, scale_factor=16, mode='bilinear').cuda()
@@ -1066,14 +1083,16 @@ def determine_group(output, prediction, target_int, target, group1, group2, grou
  return result
 
 
-def visualize_all(group1, group2, group3, subdir, model_index, perturb_index, num_correct_model,
-                   dissimilarity_model, base_size, perturbation_steps, args):
+def visualize_all(group1, group2, group3, subdir):
+ top_vis_dict = {}
  groups = [group1, group2, group3]
  for group in groups:
   folder = subdir_save_folders[subdir] + '/group' + str(groups.index(group) + 1)
   os.makedirs(folder, exist_ok=True)
   for tup in group:
    img_name = tup[0]
+   print(img_name)
+
    label = tup[1]
    input = tup[-3]
    output = tup[-2]
@@ -1095,113 +1114,201 @@ def visualize_all(group1, group2, group3, subdir, model_index, perturb_index, nu
    #print([(idx, CLS2IDX[idx]) for idx in class_indices])
    top_vis = []
    for cls_idx in class_indices:
-    top5_vis = generate_visualization(input, class_index=cls_idx, method=method)
+    top5_vis = generate_visualization2(input, class_index=cls_idx, method=method)
     top_vis.append(top5_vis)
-    top5_vis_im = Image.fromarray(top5_vis)
+
+    # image
+    top5_vis_im = generate_visualization(input, class_index=cls_idx, method=method)
+    top5_vis_im = Image.fromarray(top5_vis_im)
     top5_vis_im.save(folder + '/' + img_name[-28:-5] + '_' + CLS2IDX[cls_idx] + '_' + str(class_indices.index(cls_idx)) + '_percent' + str(100 * prob[0, cls_idx]) + '.png')
 
-   model_index, perturb_index, num_correct_model, dissimilarity_model = \
-    perturb(img_name, label, input, output, top_vis[0], num_samples, model_index, perturb_index, num_correct_model, dissimilarity_model, base_size, perturbation_steps, args)
+   top_vis_dict[img_name] = top_vis[0]
 
-  folder_perturb = subdir_save_folders[subdir] + '/perturbations/' + args.neg
-  os.makedirs(folder_perturb, exist_ok=True)
-
-  np.save(os.path.join(folder_perturb, 'model_hits.npy'), num_correct_model)
-  np.save(os.path.join(folder_perturb, 'model_dissimilarities.npy'), dissimilarity_model)
-  np.save(os.path.join(folder_perturb, 'perturbations_hits.npy'), num_correct_pertub[:, :perturb_index])
-  np.save(os.path.join(folder_perturb, 'perturbations_dissimilarities.npy'),
-           dissimilarity_pertub[:, :perturb_index])
-  np.save(os.path.join(folder_perturb, 'perturbations_logit_diff.npy'), logit_diff_pertub[:, :perturb_index])
-  np.save(os.path.join(folder_perturb, 'perturbations_prob_diff.npy'), prob_diff_pertub[:, :perturb_index])
-
-  print(np.mean(num_correct_model), np.std(num_correct_model))
-  print(np.mean(dissimilarity_model), np.std(dissimilarity_model))
-  print(perturbation_steps)
-  print(np.mean(num_correct_pertub, axis=1), np.std(num_correct_pertub, axis=1))
-  print(np.mean(dissimilarity_pertub, axis=1), np.std(dissimilarity_pertub, axis=1))
-
-  print(img_name, ' is good!')
+ #print(top_vis_dict)
+ return top_vis_dict
 
 
-def perturb(img_name, label, input, output, vis, num_samples, model_index, perturb_index,
-            num_correct_model, dissimilarity_model, base_size, perturbation_steps, args):
- num_samples += len(input)  # added
+def perturb_all(top_vis_dict, args):
+ len_subdir = 10
 
- vis = torch.from_numpy(vis)
- vis = vis.to(device)
- norm_data = input
- # norm_data = normalize2(input.clone())
- print(input.shape)
- # norm_data = normalize(input.clone())
+ num_samples = 0
+ num_correct_model = np.zeros((len_subdir))
+ dissimilarity_model = np.zeros((len_subdir))
+ model_index = 0
 
- # Compute model accuracy
- # with torch.no_grad():
- #  pred = full_model.forward(norm_data)
- pred = output
- pred_probabilities = torch.softmax(pred, dim=1)
- pred_org_logit = pred.data.max(1, keepdim=True)[0].squeeze(1)
- pred_org_prob = pred_probabilities.data.max(1, keepdim=True)[0].squeeze(1)
- pred_class = pred.data.max(1, keepdim=True)[1].squeeze(1)
- # print(label.type())
- # print(pred_class.type())
- tgt_pred = (label == pred_class).type(label.type()).data.cpu().numpy()
- num_correct_model[model_index:model_index + len(tgt_pred)] = tgt_pred
+ base_size = 224 * 224
+ #perturbation_steps = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+ perturbation_steps = [0.1, 0.8]
+ num_perturb = len(perturbation_steps)
 
- probs = torch.softmax(pred, dim=1)
- target_probs = torch.gather(probs, 1, label[:, None])[:, 0]
- second_probs = probs.data.topk(2, dim=1)[0][:, 1]
- temp = torch.log(target_probs / second_probs).data.cpu().numpy()
- dissimilarity_model[model_index:model_index + len(temp)] = temp
+ num_correct_pertub = np.zeros((num_perturb, len_subdir))
+ dissimilarity_pertub = np.zeros((num_perturb, len_subdir))
+ logit_diff_pertub = np.zeros((num_perturb, len_subdir))
+ prob_diff_pertub = np.zeros((num_perturb, len_subdir))
+ perturb_index = 0
 
- # Save original shape
- org_shape = input.shape
+ count_perturb = 0
+ print(top_vis_dict.keys())
 
- if args.neg:
-  vis = -vis
+ for i, (input, target) in enumerate(val_loader_perturb, 0):
 
- vis = vis.reshape(org_shape[0], -1)
+  if count_perturb >= 10: break
 
- for i in range(len(perturbation_steps)):
-  _input = input.clone()
+  # if target not in selected: print('skip!')
+  #
+  # if target in selected:
 
-  _, idx = torch.topk(vis, int(base_size * perturbation_steps[i]), dim=-1)
-  idx = idx.unsqueeze(1).repeat(1, org_shape[1], 1)
-  _input = _input.reshape(org_shape[0], org_shape[1], -1)
-  _input = _input.scatter_(-1, idx, 0)
-  _input = _input.reshape(*org_shape)
+  img_name, _ = val_loader_perturb.dataset.samples[i]
 
-  print(_input.shape)
-  _norm_data = _input
-  # _norm_data = normalize2(_input)
+  if img_name in top_vis_dict:
+   count_perturb += 1
 
-  with torch.no_grad():
-   out = full_model.forward(_norm_data)
+   print(img_name)
+   num_samples += len(input)
 
-  pred_probabilities = torch.softmax(out, dim=1)
-  pred_prob = pred_probabilities.data.max(1, keepdim=True)[0].squeeze(1)
-  diff = (pred_prob - pred_org_prob).data.cpu().numpy()
-  prob_diff_pertub[i, perturb_index:perturb_index + len(diff)] = diff
+   target = target.to(device)
 
-  pred_logit = out.data.max(1, keepdim=True)[0].squeeze(1)
-  diff = (pred_logit - pred_org_logit).data.cpu().numpy()
-  logit_diff_pertub[i, perturb_index:perturb_index + len(diff)] = diff
-
-  target_class = out.data.max(1, keepdim=True)[1].squeeze(1)
-  temp = (label == target_class).type(label.type()).data.cpu().numpy()
-  num_correct_pertub[i, perturb_index:perturb_index + len(temp)] = temp
-
-  probs_pertub = torch.softmax(out, dim=1)
-  target_probs = torch.gather(probs_pertub, 1, label[:, None])[:, 0]
-  second_probs = probs_pertub.data.topk(2, dim=1)[0][:, 1]
-  temp = torch.log(target_probs / second_probs).data.cpu().numpy()
-  dissimilarity_pertub[i, perturb_index:perturb_index + len(temp)] = temp
-
- model_index += len(target)
- perturb_index += len(target)
-
- return model_index, perturb_index, num_correct_model, dissimilarity_model
+   vis = top_vis_dict[img_name]
+   vis = torch.from_numpy(np.float32(vis))
+   vis = vis.to(device)
+   #print('Vis 1: ', vis)
 
 
+   input = input.to(device)
+   norm_data = normalize2(input.clone())
+
+   # Compute model accuracy
+   with torch.no_grad():
+    pred = full_model(norm_data)
+
+   # print(model_index)
+
+   pred_probabilities = torch.softmax(pred, dim=1)
+   pred_org_logit = pred.data.max(1, keepdim=True)[0].squeeze(1)
+   pred_org_prob = pred_probabilities.data.max(1, keepdim=True)[0].squeeze(1)
+   pred_class = pred.data.max(1, keepdim=True)[1].squeeze(1)
+   print(target)
+   print(pred_class)
+   tgt_pred = (target == pred_class).type(target.type()).data.cpu().numpy()
+   print('tgt_pred: ', tgt_pred)
+   num_correct_model[model_index:model_index + len(tgt_pred)] = tgt_pred
+   print('num_correct_model: ', num_correct_model)
+
+   probs = torch.softmax(pred, dim=1)
+   print(pred_probabilities == probs)
+   target_probs = torch.gather(probs, 1, target[:, None])[:, 0]
+   second_probs = probs.data.topk(2, dim=1)[0][:, 1]
+   temp = torch.log(target_probs / second_probs).data.cpu().numpy()
+   print(target_probs)
+   print(second_probs)
+   print('temp: ', temp)
+   dissimilarity_model[model_index:model_index + len(temp)] = temp
+   print('dissimilarity_model: ', dissimilarity_model)
+
+   # Save original shape
+   org_shape = input.shape
+
+   # print('Vis: ', vis)
+   #print(args.neg)
+   if args.neg:
+    vis = -vis
+
+   #print(vis.shape)
+   vis = vis.reshape(org_shape[0], -1)
+   #print(vis.shape)
+   #print('Vis 2: ', vis)
+
+   for i in range(len(perturbation_steps)):
+    print('Perturbation level: ', perturbation_steps[i])
+    _input = input.clone() # _input is unnormalized
+
+    _, idx = torch.topk(vis, int(base_size * perturbation_steps[i]), dim=-1)
+    #print('idx 1: ', idx.shape)
+    idx = idx.unsqueeze(1).repeat(1, org_shape[1], 1)
+    #print('Input old: ', _input.shape)
+    #print('Org: ', org_shape)
+    _input = _input.reshape(org_shape[0], org_shape[1], -1)
+    #print('Input new: ', _input.shape)
+    src = torch.zeros(idx.shape).cuda()
+    #print('src: ', src)
+    #print('idx:' , idx)
+    #print('src shape: ', src.shape)
+    #print('idx shape: ', idx.shape)
+    # break
+    _input = _input.scatter_(-1, idx, src)
+    #print(_input)
+
+    #_input = _input.scatter_(-1, idx, 0)
+    #print('idx 3: ', idx)
+    _input = _input.reshape(*org_shape)
+    #print('Input new 2: ', _input.shape)
+
+    # break
+    _norm_data = normalize2(_input)
+
+    with torch.no_grad():
+     out = full_model(_norm_data)
+
+    print(perturb_index)
+
+    pred_probabilities = torch.softmax(out, dim=1)
+    pred_prob = pred_probabilities.data.max(1, keepdim=True)[0].squeeze(1)
+    diff = (pred_prob - pred_org_prob).data.cpu().numpy()
+    print('pred prob diff :', diff)
+    # prob_diff_pertub[0, 0] = diff
+    prob_diff_pertub[i, perturb_index:perturb_index + len(diff)] = diff
+    print('prob_diff_perturb: ', prob_diff_pertub)
+
+    pred_logit = out.data.max(1, keepdim=True)[0].squeeze(1)
+    diff = (pred_logit - pred_org_logit).data.cpu().numpy()
+    print('pred logit diff :', diff)
+    logit_diff_pertub[i, perturb_index:perturb_index + len(diff)] = diff
+    print('logit_diff_perturb: ', logit_diff_pertub)
+
+    target_class = out.data.max(1, keepdim=True)[1].squeeze(1)
+    print(target)
+    print(target_class)
+    temp = (target == target_class).type(target.type()).data.cpu().numpy()
+    print('target temp: ', temp)
+    num_correct_pertub[i, perturb_index:perturb_index + len(temp)] = temp
+    print('num_correct_pertub: ', num_correct_pertub)
+
+    probs_pertub = torch.softmax(out, dim=1)
+    target_probs = torch.gather(probs_pertub, 1, target[:, None])[:, 0]
+    second_probs = probs_pertub.data.topk(2, dim=1)[0][:, 1]
+    temp = torch.log(target_probs / second_probs).data.cpu().numpy()
+    print('target probs temp: ', temp)
+    dissimilarity_pertub[i, perturb_index:perturb_index + len(temp)] = temp
+    print('dissimilarity pertub: ', dissimilarity_pertub)
+
+    print('Reached!')
+
+   model_index += len(target)
+   perturb_index += len(target)
+
+ # folder_perturb = '/home/t-akarthik/Desktop/DINO/myFinetune/epoch99_Perturb/' + method + '/perturbations/' + str(args.neg)
+ # os.makedirs(folder_perturb, exist_ok=True)
+
+ # np.save(os.path.join(folder_perturb, 'model_hits.npy'), num_correct_model)
+ # np.save(os.path.join(folder_perturb, 'model_dissimilarities.npy'), dissimilarity_model)
+ # np.save(os.path.join(folder_perturb, 'perturbations_hits.npy'), num_correct_pertub[:, :perturb_index])
+ # np.save(os.path.join(folder_perturb, 'perturbations_dissimilarities.npy'),
+ #         dissimilarity_pertub[:, :perturb_index])
+ # np.save(os.path.join(folder_perturb, 'perturbations_logit_diff.npy'), logit_diff_pertub[:, :perturb_index])
+ # np.save(os.path.join(folder_perturb, 'perturbations_prob_diff.npy'), prob_diff_pertub[:, :perturb_index])
+
+ print('FINAL:')
+
+ print(num_correct_model)
+ print(dissimilarity_model)
+ print(num_correct_pertub)
+ print(dissimilarity_pertub)
+
+ print(np.mean(num_correct_model), np.std(num_correct_model))
+ print(np.mean(dissimilarity_model), np.std(dissimilarity_model))
+ #print(perturbation_steps)
+ print(np.mean(num_correct_pertub, axis=1), np.std(num_correct_pertub, axis=1))
+ print(np.mean(dissimilarity_pertub, axis=1), np.std(dissimilarity_pertub, axis=1))
 
 
 if __name__ == "__main__":
@@ -1210,10 +1317,11 @@ if __name__ == "__main__":
                         default=16,
                         help='')
     parser.add_argument('--neg', type=bool,
-                        default=True,
+                        default=False,
                         help='')
     args = parser.parse_args()
 
+    #print(args.neg)
     #torch.multiprocessing.set_start_method('spawn')
 
     # build the val_loader as the ImageNet validation dataset loader
@@ -1248,13 +1356,18 @@ if __name__ == "__main__":
     device = torch.device("cuda" if cuda else "cpu")
 
 
-    # def normalize2(tensor,
-    #               mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]):
-    #  dtype = tensor.dtype
-    #  mean = torch.as_tensor(mean, dtype=dtype, device=tensor.device)
-    #  std = torch.as_tensor(std, dtype=dtype, device=tensor.device)
-    #  tensor.sub_(mean[None, :, None, None]).div_(std[None, :, None, None])
-    #  return tensor
+    def normalize2(tensor,
+                  mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]):
+     dtype = tensor.dtype
+     mean = torch.as_tensor(mean, dtype=dtype, device=tensor.device)
+     std = torch.as_tensor(std, dtype=dtype, device=tensor.device)
+     tensor.sub_(mean[None, :, None, None]).div_(std[None, :, None, None])
+     return tensor
+
+    transform2 = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
 
     num_correct = 0
     num_total = 0
@@ -1263,10 +1376,20 @@ if __name__ == "__main__":
                                                   transform = transform)
     val_loader = torch.utils.data.DataLoader(imagenet_val_data,
                                               batch_size=args.batch_size,
-                                              shuffle=True)
+                                              shuffle=False)
+
+    imagenet_val_data_perturb = torchvision.datasets.ImageNet('/home/t-akarthik/PycharmProjects2/ImageNet_Data/', split='val',
+                                                              transform = transform2)
+
+    val_loader_perturb = torch.utils.data.DataLoader(imagenet_val_data_perturb,
+                                              batch_size=args.batch_size,
+                                              shuffle=False)
+
+    # print(val_loader.dataset.samples[:10])
+    # print(val_loader.dataset)
 
     #selected = [728, 837, 366, 344, 309]
-    selected = [728] #start w one class
+    selected = [366] #start w one class
     groups_dict = {}
     subdir_save_folders = {}
     for subdir in selected:
@@ -1280,7 +1403,11 @@ if __name__ == "__main__":
 
 
     for i, (input, target) in enumerate(val_loader, 0):
+       # if i < 10:
+       #  print(target)
+
        if target in selected:
+          print(target)
 
           # input = input.cuda(non_blocking=True)
           # target = target.cuda(non_blocking=True)
@@ -1288,7 +1415,7 @@ if __name__ == "__main__":
           target = target.to(device)
 
           with torch.no_grad():
-           output = full_model.forward(input)
+           output = full_model(input)
 
           # output = model.forward_return_n_last_blocks(input, n=4, return_patch_avgpool=False, depths=[])
           # output = linear_classifier(output.view(output.size(0), -1))
@@ -1304,10 +1431,10 @@ if __name__ == "__main__":
           print(CLS2IDX[target_int])  # just to check progress
 
           img_name, _ = val_loader.dataset.samples[i]
-          # print(img_name)
+          print(img_name)
           result = determine_group(output, prediction, target_int, target, groups_dict[CLS2IDX[target_int]][0], groups_dict[CLS2IDX[target_int]][1], groups_dict[CLS2IDX[target_int]][2], img_name, input)  # make sure group1, group2, group3 are being updated
           count += 1
-          if count == 5: break
+          if count == 10: break
           # break
 
     for subdir in selected:
@@ -1319,23 +1446,15 @@ if __name__ == "__main__":
      print(len(group2))
      print(len(group3))
 
-     num_samples = 0
-     num_correct_model = np.zeros((len(group1) + len(group2) + len(group3)))
-     dissimilarity_model = np.zeros((len(group1) + len(group2) + len(group3)))
-     model_index = 0
-
-     base_size = 224 * 224
-     perturbation_steps = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-
-     num_correct_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     dissimilarity_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     logit_diff_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     prob_diff_pertub = np.zeros((9, len(group1) + len(group2) + len(group3)))
-     perturb_index = 0
-
-     visualize_all(group1, group2, group3, subdir, model_index, perturb_index, num_correct_model,
-                   dissimilarity_model, base_size, perturbation_steps, args)
+     top_vis_dict = visualize_all(group1, group2, group3, subdir)
+     print('Vis done!')
      #print('Class accuracy: ', len(group1) / (len(group1) + len(group2) + len(group3)))
+
+     print('Perturb: ', CLS2IDX[subdir])
+     #print(args.neg)
+     #print(args.batch_size)
+     perturb_all(top_vis_dict, args)
+     print('Perturb done!')
 
     print('Done!')
 
