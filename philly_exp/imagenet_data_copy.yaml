@@ -1,0 +1,218 @@
+description: DINO Small Perturb
+
+target:
+  service: amlk8s
+  name: itpeusp100cl #itplabrr1cl1 #itpeusp40cl
+  vc: resrchvc
+
+environment:
+  image: pytorch/pytorch:1.9.0-cuda10.2-cudnn7-devel
+  setup:
+  - sh amlk8s_setup.sh
+
+code:
+  # local directory of the code. this will be uploaded to the server.
+  # $CONFIG_DIR is expanded to the directory of this config file
+  local_dir: $CONFIG_DIR/ViT
+
+#storage:
+#  # storage account and container where the ImageNet tar balls are contained
+#  data:
+#    storage_account_name: imagenet0storage0account
+#    container_name: imagenet0container
+
+data:
+  # location of the tar balls relative to the container
+  remote_dir: data/Ananya/gcrBackup
+  local_dir: /home/t-akarthik/gcrBackup
+#  storage_id: data
+
+# job loading the imagenet validation dataset
+jobs:
+- name: DeiTSmall_evaluateAndStore2
+  # gpu job
+  sku: G1
+  command:
+#  - python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 0 --end 50
+#  - python perturbationMetrics.py
+#  - python calculateAUC.py
+#  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 0 --end 50
+  - python evaluateAndStore.py
+
+#- name: vit_base_perturb_0to50_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 0 --end 50
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 0 --end 50
+#- name: vit_base_perturb_50to100_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 50 --end 100
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 50 --end 100
+#- name: vit_base_perturb_100to150_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 100 --end 150
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 100 --end 150
+#- name: vit_base_perturb_150to200_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 150 --end 200
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 150 --end 200
+#- name: vit_base_perturb_200to250_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 200 --end 250
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 200 --end 250
+#- name: vit_base_perturb_250to300_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 250 --end 300
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 250 --end 300
+#- name: vit_base_perturb_300to350_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 300 --end 350
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 300 --end 350
+#- name: vit_base_perturb_350to400_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 350 --end 400
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 350 --end 400
+#- name: vit_base_perturb_400to450_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 400 --end 450
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 400 --end 450
+#- name: vit_base_perturb_450to500_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 450 --end 500
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 450 --end 500
+#- name: vit_base_perturb_500to550_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 500 --end 550
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 500 --end 550
+#- name: vit_base_perturb_550to600_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 550 --end 600
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 550 --end 600
+#- name: vit_base_perturb_600to650_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 600 --end 650
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 600 --end 650
+#- name: vit_base_perturb_650to700_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 650 --end 700
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 650 --end 700
+#- name: vit_base_perturb_700to750_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 700 --end 750
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 700 --end 750
+#- name: vit_base_perturb_750to800_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 750 --end 800
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 750 --end 800
+#- name: vit_base_perturb_800to850_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 800 --end 850
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 800 --end 850
+#- name: vit_base_perturb_850to900_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 850 --end 900
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 850 --end 900
+#- name: vit_base_perturb_900to950_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 900 --end 950
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 900 --end 950
+#- name: vit_base_perturb_950to1000_pos
+#  # gpu job
+#  sku: G1
+#  command:
+#  #- python -m torch.distributed.launch --nproc_per_node=4 evaluate_dino2.py
+#  - python myFinetune_pos_vis_perturbation2_Philly.py --batch-size 1 --start 950 --end 1000
+##  - python perturbationMetrics.py
+##  - python myFinetune_neg_vis_perturbation2_Philly.py --batch-size 1 --start 950 --end 1000
+#
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

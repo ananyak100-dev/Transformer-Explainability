@@ -17,8 +17,8 @@ from utils.iou import IoU
 from data.imagenet import Imagenet_Segmentation
 
 from ViT_explanation_generator import Baselines, LRP
-from ViT_new import vit_small_patch16_224
-from ViT_LRP import vit_small_patch16_224 as vit_LRP
+from ViT_new import vit_large_patch16_224
+from ViT_LRP import vit_large_patch16_224 as vit_LRP
 
 from sklearn.metrics import precision_recall_curve
 import matplotlib.pyplot as plt
@@ -128,7 +128,7 @@ test_lbl_trans = transforms.Compose([
 ])
 
 ROOT_DIR = "/home/t-akarthik/PycharmProjects2/ImageNet_Data/"
-OUTPUT_DIR = ROOT_DIR + "/output/Segmentation/ViT_Small"
+OUTPUT_DIR = ROOT_DIR + "/output/Segmentation/ViT_Large"
 
 imagenet_seg_path = ROOT_DIR + '/gtsegs_ijcv (1).mat'
 
@@ -137,7 +137,7 @@ ds = Imagenet_Segmentation(imagenet_seg_path,
 dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=1, drop_last=False)
 
 # Model
-model = vit_small_patch16_224(pretrained=True).cuda()
+model = vit_large_patch16_224(pretrained=True).cuda()
 baselines = Baselines(model)
 
 # LRP
@@ -289,6 +289,12 @@ for batch_idx, (image, labels) in enumerate(iterator):
 
 predictions = np.concatenate(predictions)
 targets = np.concatenate(targets)
+
+print(predictions)
+print(predictions.shape)
+print(targets)
+print(targets.shape)
+
 pr, rc, thr = precision_recall_curve(targets, predictions)
 np.save(os.path.join(saver.experiment_dir, 'precision.npy'), pr)
 np.save(os.path.join(saver.experiment_dir, 'recall.npy'), rc)
