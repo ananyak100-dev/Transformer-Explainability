@@ -18,6 +18,13 @@ y_deit_small_neg = [77.14, 69.494, 68.1, 66.35, 63.696, 59.92, 54.398, 45.522, 3
 print('DeiT Small AUC Neg: ')
 print(metrics.auc(x, y_deit_small_neg))
 
+# import matplotlib.pyplot as plt
+# plt.plot([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], [41.888, 25.612, 15.096, 8.238, 4.208, 2.046, 1.13,  0.574, 0.334])
+# plt.xlabel('Perturbation Levels')
+# plt.ylabel('Accuracy (%)')
+# plt.savefig('/home/t-akarthik/DeiT_Small_pos_plot.png') # without the unperturbed first data point
+# 
+
 y_deit_base_pos = [80.21, 48.704, 30.344, 18.006, 10.408, 5.534, 2.808, 1.364, 0.642, 0.31]
 print('DeiT Base AUC Pos: ')
 print(metrics.auc(x, y_deit_base_pos))

@@ -23,8 +23,8 @@ code:
 
 data:
   # location of the tar balls relative to the container
-  remote_dir: data/Ananya/gcrBackup
-  local_dir: /home/t-akarthik/gcrBackup
+  remote_dir: data/Ananya/gcrBackup/PycharmProjects2
+  local_dir: /home/t-akarthik/gcrBackup/PycharmProjects2
 #  storage_id: data
 
 # job loading the imagenet validation dataset
