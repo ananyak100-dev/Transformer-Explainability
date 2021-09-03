@@ -19,6 +19,16 @@ To evaluate, visualize, and observe the effect of introducing RandomCrop on DeiT
 
   DeiT Small: python3 generate_visualizations_deit2_small.py
   
+  The RandomCrop perturbation is introduced in the above file here:
+  
+    transform2 = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomCrop(size=224, padding=4),  # added for our experiments
+        transforms.ToTensor(),
+        normalize,
+    ])
+
+  
   This code looks at multiple visualization techniques, but this list can be edited:
     
     methods = ['transformer_attribution', 'attn_last_layer', 'rollout', 'lrp', 'attn_gradcam']
